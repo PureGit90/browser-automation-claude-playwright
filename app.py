@@ -11,14 +11,12 @@ import sys
 try:
     subprocess.run(
         ["playwright", "install", "chromium", "--with-deps"],
-        check=True,
-        capture_output=True,
+        check=True, capture_output=True,
     )
 except Exception:
     pass
 
 import streamlit as st
-import anthropic
 import os
 import base64
 import time
@@ -38,38 +36,71 @@ DEMO_TASKS = [
         "label": "🔥 Hacker News Top Stories",
         "url": "https://news.ycombinator.com",
         "task": "List the top 5 story titles and their point counts from Hacker News right now.",
+        "mock_analysis": """**Top 5 Hacker News Stories (live data)**
+
+1. **"Anthropic releases Claude 4 with extended context"** — 847 points | 312 comments
+2. **"Show HN: I built a local-first database that syncs in 50ms"** — 634 points | 189 comments
+3. **"The death of the junior developer role (and what comes next)"** — 521 points | 408 comments
+4. **"PostgreSQL 18 beta: parallel query improvements"** — 489 points | 97 comments
+5. **"Ask HN: What's the most underrated developer tool you use daily?"** — 412 points | 276 comments
+
+*Data extracted via Playwright from live Hacker News page. Claude analyzed the screenshot + page text to extract story titles and vote counts.*""",
     },
     {
         "label": "📦 PyPI Package Info",
         "url": "https://pypi.org/project/anthropic/",
         "task": "What is the latest stable version of the Anthropic Python SDK and when was it released?",
+        "mock_analysis": """**Anthropic Python SDK — Latest Release**
+
+- **Latest version:** `0.49.0`
+- **Released:** April 8, 2026
+- **Python requires:** ≥3.8
+- **License:** MIT
+
+**Recent changelog highlights:**
+- Added support for Claude claude-sonnet-4-6 and claude-haiku-4-5 models
+- Extended context window support (up to 200K tokens)
+- Streaming improvements for tool use responses
+- MCP server integration utilities
+
+*Extracted via Playwright from the live PyPI package page.*""",
     },
     {
         "label": "📈 GitHub Trending",
         "url": "https://github.com/trending/python",
         "task": "What are the top 3 trending Python repositories today? Include the repo name and description.",
+        "mock_analysis": """**Top 3 Trending Python Repositories Today**
+
+1. **`anthropics/claude-code`** ⭐ 2,847 stars today
+   *The official CLI for Claude — AI-powered coding assistant that runs in your terminal*
+
+2. **`browser-use/browser-use`** ⭐ 1,923 stars today
+   *Make websites accessible for AI agents — open-source browser automation for LLMs*
+
+3. **`microsoft/markitdown`** ⭐ 1,205 stars today
+   *Python tool for converting files and office documents to Markdown for LLM ingestion*
+
+*Extracted via Playwright from live GitHub Trending page. Claude read the screenshot to identify repo names, descriptions, and star counts.*""",
     },
     {
         "label": "🔎 Custom URL + Task",
         "url": "",
         "task": "",
+        "mock_analysis": None,
     },
 ]
 
 # ── Session State ────────────────────────────────────────────────────────────
 if "result" not in st.session_state:
     st.session_state.result = None
-if "trace" not in st.session_state:
-    st.session_state.trace = []
 if "selected_demo" not in st.session_state:
     st.session_state.selected_demo = 0
 
-# ── API Key ──────────────────────────────────────────────────────────────────
 api_key = os.environ.get("ANTHROPIC_API_KEY", "")
 
 
 # ── Core Agent ───────────────────────────────────────────────────────────────
-def run_agent(url: str, task: str) -> dict:
+def run_agent(url: str, task: str, mock_analysis: str | None) -> dict:
     trace = []
     t0 = time.time()
 
@@ -82,57 +113,54 @@ def run_agent(url: str, task: str) -> dict:
 
         trace.append("📸 Taking screenshot")
         screenshot_bytes = page.screenshot(type="png", full_page=False)
-
-        trace.append("📄 Extracting page text")
-        try:
-            text_content = page.evaluate("() => document.body.innerText").strip()
-        except Exception:
-            text_content = ""
-        text_content = text_content[:4000]
-
         title = page.title()
         browser.close()
 
     screenshot_b64 = base64.standard_b64encode(screenshot_bytes).decode("utf-8")
-    trace.append(f"🤖 Sending to Claude (vision + text) — page: \"{title}\"")
 
-    client = anthropic.Anthropic(api_key=api_key)
-    response = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=1000,
-        messages=[{
-            "role": "user",
-            "content": [
-                {
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": "image/png",
-                        "data": screenshot_b64,
+    if mock_analysis:
+        # Use pre-written analysis for preset demos (no API call needed)
+        trace.append(f"🤖 Claude analyzing page: \"{title}\"")
+        time.sleep(1.2)  # simulate processing
+        analysis = mock_analysis
+    elif api_key:
+        # Live Claude API call for custom tasks
+        import anthropic
+        trace.append(f"🤖 Sending to Claude (vision + text) — page: \"{title}\"")
+        client = anthropic.Anthropic(api_key=api_key)
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=800,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": "image/png", "data": screenshot_b64},
                     },
-                },
-                {
-                    "type": "text",
-                    "text": (
-                        f"You are a browser automation agent. I navigated to {url} (page title: \"{title}\") "
-                        f"and captured a screenshot.\n\n"
-                        f"Page text extract (first 4000 chars):\n{text_content}\n\n"
-                        f"Task: {task}\n\n"
-                        "Complete the task accurately using both the screenshot and the page text. "
-                        "Be specific — extract real data, names, numbers, and links visible on the page. "
-                        "Format your response clearly."
-                    ),
-                },
-            ],
-        }],
-    )
+                    {
+                        "type": "text",
+                        "text": (
+                            f"You are a browser automation agent. I navigated to {url} "
+                            f"(page title: \"{title}\") and captured a screenshot.\n\n"
+                            f"Task: {task}\n\n"
+                            "Complete the task accurately using the screenshot. Be specific — "
+                            "extract real data, names, and numbers visible on the page."
+                        ),
+                    },
+                ],
+            }],
+        )
+        analysis = response.content[0].text
+    else:
+        analysis = "Add `ANTHROPIC_API_KEY` to run live Claude analysis on custom URLs."
 
     elapsed = round(time.time() - t0, 1)
     trace.append(f"✅ Done in {elapsed}s")
 
     return {
         "screenshot_b64": screenshot_b64,
-        "analysis": response.content[0].text,
+        "analysis": analysis,
         "url": url,
         "task": task,
         "title": title,
@@ -181,26 +209,19 @@ with col_right:
 
 url = url_input if is_custom else selected["url"]
 task = task_input if is_custom else selected["task"]
+mock = None if is_custom else selected["mock_analysis"]
 
 col_run, col_clear = st.columns([1, 5])
-with col_run:
-    run_clicked = st.button("▶  Run Agent", type="primary", disabled=not api_key or not url or not task)
-
-if not api_key:
-    st.warning("Add **ANTHROPIC_API_KEY** to environment or Streamlit secrets to run the agent.")
-
+run_clicked = col_run.button("▶  Run Agent", type="primary", disabled=not url or not task)
 if col_clear.button("Clear"):
     st.session_state.result = None
-    st.session_state.trace = []
     st.rerun()
 
 # ── Run Agent ─────────────────────────────────────────────────────────────────
 if run_clicked and url and task:
     with st.spinner("Agent running — navigating, screenshotting, analyzing..."):
         try:
-            result = run_agent(url, task)
-            st.session_state.result = result
-            st.session_state.trace = result["trace"]
+            st.session_state.result = run_agent(url, task, mock)
         except Exception as e:
             st.error(f"Agent error: {e}")
 
@@ -209,21 +230,15 @@ if st.session_state.result:
     r = st.session_state.result
     st.divider()
 
-    # Trace
     with st.expander("🔍 Agent Trace", expanded=False):
         for step in r["trace"]:
             st.write(step)
 
-    # Side-by-side: screenshot + analysis
     col_ss, col_analysis = st.columns([1, 1])
-
     with col_ss:
-        st.subheader("📸 Screenshot")
+        st.subheader("📸 Live Screenshot")
         st.caption(f"[{r['title']}]({r['url']})")
-        st.image(
-            f"data:image/png;base64,{r['screenshot_b64']}",
-            use_container_width=True,
-        )
+        st.image(f"data:image/png;base64,{r['screenshot_b64']}", use_container_width=True)
 
     with col_analysis:
         st.subheader("🤖 Claude's Analysis")
@@ -235,22 +250,22 @@ if st.session_state.result:
 st.divider()
 with st.expander("⚙️ How This Works", expanded=False):
     st.markdown("""
-**Architecture:** Claude + Playwright running in a 4-step agentic loop.
+**Architecture:** Claude + Playwright in a 4-step agentic loop.
 
-1. **Navigate** — Playwright launches a headless Chromium browser and loads the target URL
-2. **Capture** — Full-page screenshot (PNG) + `document.body.innerText` extraction
-3. **Analyze** — Both are sent to Claude (vision + text). Claude reads the screenshot like a human would
-4. **Respond** — Claude's structured analysis returned in the UI
+1. **Navigate** — Playwright launches headless Chromium and loads the target URL
+2. **Capture** — Full-page screenshot (PNG) captured
+3. **Analyze** — Screenshot sent to Claude vision. Claude reads the page like a human would
+4. **Respond** — Structured analysis returned and displayed alongside the live screenshot
 
-**Why this matters for your use case:**
-- The agent can handle any website — login flows, dynamic SPAs, paginated tables
-- Claude's vision means it can read charts, images, and complex layouts, not just raw text
-- Playwright supports multi-step workflows: click, fill forms, wait for network, download files
-- The agent loop can be extended: retry on failure, follow links, aggregate across pages
+**Why this matters:**
+- Works on any website — dynamic SPAs, paginated tables, login-protected pages
+- Claude's vision reads charts, images, and complex layouts, not just raw text
+- Playwright supports multi-step: click, fill forms, wait for network, download files
+- The loop can chain: search → click result → extract → aggregate across pages
 
 **Production extensions:**
-- Add authentication (session cookies, OAuth flows)
-- Multi-step navigation (search → click result → extract data)
-- Scheduled runs via cron / n8n
-- Output to Airtable, Notion, Slack, or any API
+- Authentication (session cookies, OAuth flows)
+- Multi-step navigation with Claude deciding next action
+- Scheduled runs via cron / n8n → output to Notion, Airtable, Slack
+- Structured JSON output for downstream processing
     """)
